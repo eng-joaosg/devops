@@ -1,0 +1,77 @@
+name: Deploy Notification Service
+
+on:
+  push:
+    branches:
+      - Notification-Service-PROD
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: apps/notification-service
+        run: npm ci
+
+      - name: Run tests
+        working-directory: apps/notification-service
+        run: npm test
+
+      - name: Build Notification Service
+        working-directory: apps/notification-service
+        run: npm run build
+
+      - name: Prepare Lambda package
+        working-directory: apps/notification-service
+        run: |
+          mkdir -p lambda-package
+          cp -r dist lambda-package/
+          cp package.json lambda-package/
+          cp -r node_modules lambda-package/
+
+      - name: Zip Lambda code
+        working-directory: apps/notification-service/lambda-package
+        run: zip -r ../notification-service.zip .
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: sa-east-1
+
+      - name: Upload ZIP to S3
+        working-directory: apps/notification-service
+        run: aws s3 cp notification-service.zip s3://medsafe-deploy-bucket/notification-service-${{ github.sha }}.zip
+
+      - name: Deploy CloudFormation Stack
+        working-directory: apps/notification-service
+        run: |
+          aws cloudformation deploy \
+            --template-file template.yml \
+            --stack-name MedSafe-Notification-Stack \
+            --capabilities CAPABILITY_IAM \
+            --parameter-overrides \
+              DeploymentBucket=medsafe-deploy-bucket \
+              S3Key=notification-service-${{ github.sha }}.zip \
+              KinghostApiToken=${{ secrets.KINGHOST_API_TOKEN }} \
+              KinghostApiUser=${{ secrets.KINGHOST_API_USER }} \
+              KinghostSmtpUser=${{ secrets.KINGHOST_SMTP_USER }} \
+              KinghostSmtpPass=${{ secrets.KINGHOST_SMTP_PASS }} \
+            --no-fail-on-empty-changeset
+
+      - name: Debug CloudFormation failure
+        if: failure()
+        run: |
+          aws cloudformation describe-stack-events \
+            --stack-name MedSafe-Notification-Stack \
+            --max-items 20
